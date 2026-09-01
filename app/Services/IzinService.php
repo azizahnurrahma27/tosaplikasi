@@ -14,15 +14,18 @@ class IzinService
 {
     private const PER_PAGE = 20;
 
-    public function paginate(array $filters = [], int $perPage = self::PER_PAGE): LengthAwarePaginator
+    private function baseQuery()
     {
-        $query = Tizin::select(['id', 'idsis', 'jen', 'tgl_mulai', 'tgl_akhir', 'ket', 'dok', 'sta', 'approved_by', 'approved_at', 'alasan_tolak', 'created_at'])
+        return Tizin::select(['id', 'idsis', 'jen', 'tgl_mulai', 'tgl_akhir', 'ket', 'dok', 'sta', 'approved_by', 'approved_at', 'alasan_tolak', 'created_at'])
             ->with([
                 'siswa:id,nis,namlen,nampan',
                 'jenis:id,title',
                 'documents:id,imagable_id,imagable_type,name,path,mime_type,size',
             ]);
+    }
 
+    private function applyFilters($query, array $filters)
+    {
         if (!empty($filters['idsis'])) {
             $query->where('idsis', $filters['idsis']);
         }
@@ -39,6 +42,26 @@ class IzinService
             $query->where('ket', 'like', '%' . $filters['search'] . '%');
         }
 
+        if (!empty($filters['siswa_ids'])) {
+            $query->whereIn('idsis', $filters['siswa_ids']);
+        }
+
+        if (!empty($filters['tgl'])) {
+            $tanggal = \Carbon\Carbon::parse($filters['tgl'])->toDateString();
+            $query->where('tgl_mulai', '<=', $tanggal)
+                ->where(function ($q) use ($tanggal) {
+                    $q->whereNull('tgl_akhir')
+                        ->orWhere('tgl_akhir', '>=', $tanggal);
+                });
+        }
+
+        return $query;
+    }
+
+    public function paginate(array $filters = [], int $perPage = self::PER_PAGE): LengthAwarePaginator
+    {
+        $query = $this->applyFilters($this->baseQuery(), $filters);
+
         return $query->latest('created_at')->paginate($perPage)->withQueryString();
     }
 
@@ -51,6 +74,7 @@ class IzinService
         }
 
         $filters['siswa_ids'] = $siswaIds;
+
         return $this->paginateByIds($filters, $perPage);
     }
 
@@ -62,44 +86,16 @@ class IzinService
             return Tizin::whereRaw('1=0')->paginate($perPage);
         }
 
-        return Tizin::select(['id', 'idsis', 'jen', 'tgl_mulai', 'tgl_akhir', 'ket', 'dok', 'sta', 'approved_by', 'approved_at', 'alasan_tolak', 'created_at'])
-            ->with([
-                'siswa:id,nis,namlen,nampan',
-                'jenis:id,title',
-                'documents:id,imagable_id,imagable_type,name,path,mime_type,size',
-            ])
+        $query = $this->baseQuery()
             ->whereIn('idsis', $siswaIds)
-            ->where('sta', IzinStatus::PENDING->value)
-            ->latest('created_at')
-            ->paginate($perPage)
-            ->withQueryString();
+            ->where('sta', IzinStatus::PENDING->value);
+
+        return $query->latest('created_at')->paginate($perPage)->withQueryString();
     }
 
     private function paginateByIds(array $filters, int $perPage): LengthAwarePaginator
     {
-        $query = Tizin::select(['id', 'idsis', 'jen', 'tgl_mulai', 'tgl_akhir', 'ket', 'dok', 'sta', 'approved_by', 'approved_at', 'alasan_tolak', 'created_at'])
-            ->with([
-                'siswa:id,nis,namlen,nampan',
-                'jenis:id,title',
-                'documents:id,imagable_id,imagable_type,name,path,mime_type,size',
-            ]);
-
-        if (!empty($filters['siswa_ids'])) {
-            $query->whereIn('idsis', $filters['siswa_ids']);
-        }
-
-        if (!empty($filters['jen'])) {
-            $query->where('jen', $filters['jen']);
-        }
-
-        if (!empty($filters['tgl'])) {
-            $tanggal = \Carbon\Carbon::parse($filters['tgl'])->toDateString();
-            $query->where('tgl_mulai', '<=', $tanggal)
-                  ->where(function ($q) use ($tanggal) {
-                      $q->whereNull('tgl_akhir')
-                        ->orWhere('tgl_akhir', '>=', $tanggal);
-                  });
-        }
+        $query = $this->applyFilters($this->baseQuery(), $filters);
 
         return $query->latest('created_at')->paginate($perPage)->withQueryString();
     }
@@ -114,7 +110,8 @@ class IzinService
         $izin->alasan_tolak = null;
         $izin->save();
 
-        $this->syncAttendanceForIzin($izin);
+        $employeeNo = $this->resolveEmployeeNoFromAttendance($approverKaryawanId);
+        $this->syncAttendanceForIzin($izin, $employeeNo);
 
         return $izin;
     }
@@ -126,19 +123,19 @@ class IzinService
         $izin->sta = IzinStatus::REJECTED->value;
         $izin->approved_by = $approverKaryawanId;
         $izin->approved_at = now();
-        $izin->alasan_tolak = $alasan;
+        $izin->alasan_tolak = $alasan;  
         $izin->save();
-
-        $this->removeAttendanceForIzin($izin->id);
 
         return $izin;
     }
 
-    private function syncAttendanceForIzin(Tizin $izin): void
+    private function syncAttendanceForIzin(Tizin $izin, ?string $employeeNo = null, string $action = 'approved'): void
     {
         if (!$izin->tgl_mulai) {
             return;
         }
+
+        $employeeNo = $this->resolveEmployeeNoForAttendance($employeeNo, $izin->approved_by);
 
         $mulai = $izin->tgl_mulai instanceof \Carbon\Carbon
             ? $izin->tgl_mulai->copy()
@@ -154,25 +151,79 @@ class IzinService
             : null;
 
         foreach (CarbonPeriod::create($mulai, $akhir) as $tanggal) {
-            Attendance::updateOrCreate(
-                [
-                    'student_id' => $izin->idsis,
-                    'event_time' => $tanggal->toDateString() . ' 00:00:00',
+            $eventTime = ($izin->approved_at ?? now())->format('Y-m-d H:i:s');
+
+            $existing = Attendance::query()
+                ->where('student_id', $izin->idsis)
+                ->where('device_id', 6)
+                ->where('employee_no', $employeeNo)
+                ->where('event_time', $eventTime)
+                ->whereJsonContains('raw_payload->izin_id', $izin->id)
+                ->where('raw_payload->action', $action)
+                ->first();
+
+            if ($existing) {
+                continue;
+            }
+
+            Attendance::create([
+                'device_id' => 6,
+                'student_id' => $izin->idsis,
+                'employee_no' => $employeeNo,
+                'name' => $namaSiswa,
+                'event_time' => $eventTime,
+                'attendance_status' => $statusLabel,
+                'serial_no' => null,
+                'picture_path' => null,
+                'raw_payload' => [
+                    'source' => 'izin',
+                    'izin_id' => $izin->id,
+                    'jenis' => $izin->jenis?->title,
+                    'approved_by' => $izin->approved_by,
+                    'action' => $action,
+                    'alasan_tolak' => $action === 'rejected' ? $izin->alasan_tolak : null,
+                    'event_date' => $tanggal->toDateString(),
                 ],
-                [
-                    'name' => $namaSiswa,
-                    'attendance_status' => $statusLabel,
-                    'employee_no' => null,
-                    'serial_no' => null,
-                    'picture_path' => null,
-                    'raw_payload' => [
-                        'source' => 'izin',
-                        'izin_id' => $izin->id,
-                        'jenis' => $izin->jenis?->title,
-                    ],
-                ]
-            );
+            ]);
         }
+    }
+
+    private function resolveEmployeeNoFromAttendance(string|int|null $approverKaryawanId): ?string
+    {
+        $latestEmployeeNo = Attendance::query()
+            ->whereNotNull('employee_no')
+            ->where('employee_no', '!=', '')
+            ->latest('id')
+            ->value('employee_no');
+
+        if ($latestEmployeeNo) {
+            return (string) $latestEmployeeNo;
+        }
+
+        if ($approverKaryawanId === null || $approverKaryawanId === '') {
+            return null;
+        }
+
+        $value = (string) $approverKaryawanId;
+
+        if (preg_match('/^\d+$/', $value)) {
+            $karyawan = \App\Models\Karyawan::find((int) $value);
+
+            return $karyawan?->nip ? (string) $karyawan->nip : $value;
+        }
+
+        return $value;
+    }
+
+    private function resolveEmployeeNoForAttendance(?string $employeeNo, string|int|null $fallbackApproverKaryawanId): string
+    {
+        $resolved = $employeeNo ?: $this->resolveEmployeeNoFromAttendance($fallbackApproverKaryawanId);
+
+        if ($resolved === null || trim((string) $resolved) === '') {
+            throw new \RuntimeException('employee_no tidak boleh null atau kosong saat membuat absensi izin.');
+        }
+
+        return (string) $resolved;
     }
 
     private function removeAttendanceForIzin(int $izinId): void

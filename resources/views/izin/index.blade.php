@@ -553,6 +553,10 @@
             width: 90%;
             box-shadow: var(--shadow-lg);
             font-family: var(--font-family);
+            margin: auto;
+            position: fixed;
+            inset: 50% auto auto 50%;
+            transform: translate(-50%, -50%);
         }
 
         dialog.modal-tolak::backdrop {
@@ -1356,22 +1360,42 @@
                         <td>
                             @if($isPending)
                                 <div class="aksi-cell">
-                                    <form method="POST" action="{{ route('guru.izin.approve', [$isikelas->id, $izin->id]) }}">
-                                        @csrf
-                                        <button type="submit" class="btn btn-primary btn-sm">
-                                            <i class='bx bx-check'></i> Setujui
-                                        </button>
-                                    </form>
+                                    <button type="button" class="btn btn-primary btn-sm"
+                                        onclick="document.getElementById('modal-approve-{{ $izin->id }}').showModal()">
+                                        <i class='bx bx-check'></i> Setujui
+                                    </button>
                                     <button type="button" class="btn btn-ghost btn-sm"
                                         onclick="document.getElementById('modal-tolak-{{ $izin->id }}').showModal()">
                                         <i class='bx bx-x'></i> Tolak
                                     </button>
                                 </div>
 
+                                <dialog id="modal-approve-{{ $izin->id }}" class="modal-tolak">
+                                    <form method="POST" action="{{ route('guru.izin.approve', [$isikelas->id, $izin->id]) }}">
+                                        @csrf
+                                        <div class="modal-title">Konfirmasi Persetujuan</div>
+                                        <p style="margin:0 0 1rem; color:var(--gray-600);">
+                                            Apakah Anda yakin ingin menyetujui izin untuk {{ $namaFull }}?
+                                        </p>
+                                        <div class="modal-actions">
+                                            <button type="button" class="btn btn-ghost btn-sm"
+                                                onclick="document.getElementById('modal-approve-{{ $izin->id }}').close()">
+                                                Batal
+                                            </button>
+                                            <button type="submit" class="btn btn-primary btn-sm">
+                                                Ya, Setujui
+                                            </button>
+                                        </div>
+                                    </form>
+                                </dialog>
+
                                 <dialog id="modal-tolak-{{ $izin->id }}" class="modal-tolak">
                                     <form method="POST" action="{{ route('guru.izin.reject', [$isikelas->id, $izin->id]) }}">
                                         @csrf
-                                        <div class="modal-title">Tolak Izin {{ $namaFull }}</div>
+                                        <div class="modal-title">Konfirmasi Penolakan</div>
+                                        <p style="margin:0 0 0.75rem; color:var(--gray-600);">
+                                            Apakah Anda yakin ingin menolak izin untuk {{ $namaFull }}?
+                                        </p>
                                         <textarea name="alasan_tolak" class="modal-textarea" placeholder="Alasan penolakan (opsional)"></textarea>
                                         <div class="modal-actions">
                                             <button type="button" class="btn btn-ghost btn-sm"
@@ -1379,7 +1403,7 @@
                                                 Batal
                                             </button>
                                             <button type="submit" class="btn btn-danger btn-sm">
-                                                Tolak Izin
+                                                Ya, Tolak
                                             </button>
                                         </div>
                                     </form>

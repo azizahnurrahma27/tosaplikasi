@@ -6,9 +6,10 @@ use Illuminate\Database\Eloquent\Model;
 
 class Attendance extends Model
 {
-    protected $connection = 'mai2';
+    protected $connection = 'mai5';
 
     protected $fillable = [
+        'device_id',
         'student_id',
         'employee_no',
         'name',
